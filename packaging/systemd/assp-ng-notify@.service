@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Started by OnFailure= of assp-ng-proxy.service; %i is the name of the failed unit.
+[Unit]
+Description=ASSP-NG failure alert for %i
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/assp-ng notify --event service-failed --message "%i failed"
+# Rate-limit stamps (one per event, spec 8.6): kept between runs so a crash loop alerts at
+# most once per alerts.min_interval; root-only so no other user can suppress alerts.
+RuntimeDirectory=assp-ng-notify
+RuntimeDirectoryPreserve=yes
+RuntimeDirectoryMode=0700

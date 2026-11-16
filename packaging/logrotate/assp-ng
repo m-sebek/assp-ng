@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Plain rotation (rename + create): the proxy's WatchedFileHandler reopens the new file by itself,
+# so neither copytruncate nor a postrotate signal is needed.
+
+/var/log/assp-ng/maillog.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 assp-ng assp-ng
+}
+
+/var/log/assp-ng/assp-ng.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 assp-ng assp-ng
+}
+
+# debug.log holds personal data (SMTP dialogues): keep it for 7 days only.
+/var/log/assp-ng/debug.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 assp-ng assp-ng
+}

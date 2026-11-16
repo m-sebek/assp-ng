@@ -1,0 +1,28 @@
+[project]
+name = "assp-ng"
+description = "ASSP-NG: an SMTP anti-spam proxy"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.12"
+dynamic = ["version"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+
+[[tool.mypy.overrides]]
+module = ["asspng.smtp.*", "asspng.proxy.*", "asspng.checks.*", "asspng.state.*", "asspng.service.*",
+          "asspng.cli.*", "asspng.postfix.*", "asspng.config.editor", "asspng.config.docgen"]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["systemd.*", "redis.*", "tomlkit.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["asspng"]

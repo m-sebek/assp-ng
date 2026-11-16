@@ -1,0 +1,7 @@
+compatibility_level = 3.9
+content_filter = smtp-amavis:[127.0.0.1]:10024
+inet_interfaces = all
+myhostname = mail.example.org
+mynetworks = 127.0.0.0/8 [::1]/128
+smtpd_recipient_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination, reject_rhsbl_sender dbl.spamhaus.org
+smtpd_tls_security_level = may

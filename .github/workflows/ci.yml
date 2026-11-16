@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "23 2 * * *"  # nightly: the load test
+
+permissions:
+  contents: read
+
+env:
+  # Debian packages the tests need (the same set in every job, spec 10.3).
+  PYTHON_PACKAGES: >-
+    python3-dnspython python3-redis python3-pymysql python3-sqlalchemy python3-alembic
+    python3-systemd python3-cryptography python3-tomlkit python3-pytest
+    python3-pytest-asyncio python3-hypothesis python3-pytest-cov
+
+jobs:
+  unit:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install packages
+        run: |
+          apt-get update
+          apt-get install -y git python3-dnspython python3-redis python3-pymysql python3-sqlalchemy python3-alembic python3-systemd python3-cryptography python3-tomlkit python3-pytest python3-pytest-asyncio python3-hypothesis python3-pytest-cov python3-mypy python3-flake8 redis-server swaks shellcheck
+      - uses: actions/checkout@v4
+      - name: flake8
+        run: python3 -m flake8
+      - name: mypy
+        run: python3 -m mypy asspng
+      - name: pytest
+        run: python3 -m pytest
+
+  integration:
+    # The full suite with a real MariaDB (the MySQL parameters of the database tests) and a
+    # coverage gate over the core packages (spec 10.3: at least 85 %).
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install packages
+        run: |
+          apt-get update
+          # No service may start during the installation: there is no systemd here.
+          printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+          chmod +x /usr/sbin/policy-rc.d
+          apt-get install -y git redis-server mariadb-server swaks $PYTHON_PACKAGES
+      - uses: actions/checkout@v4
+      - name: Start Redis
+        # The tests start their own Redis on random ports; this one proves the service works here.
+        run: |
+          redis-server --daemonize yes --save "" --bind 127.0.0.1
+          for _ in $(seq 1 30); do
+            if redis-cli ping >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "redis-server did not come up" >&2
+          exit 1
+      - name: Start MariaDB
+        run: |
+          mkdir -p /run/mysqld
+          chown mysql:mysql /run/mysqld
+          if [ ! -d /var/lib/mysql/mysql ]; then
+            mariadb-install-db --user=mysql --datadir=/var/lib/mysql
+          fi
+          setsid mariadbd --user=mysql >/tmp/mariadb.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if mariadb-admin ping --silent 2>/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/mariadb.log
+          exit 1
+      - name: Create the test database
+        # The password is generated here, masked in the log and never committed.
+        run: |
+          password=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+          echo "::add-mask::$password"
+          mariadb <<SQL
+          CREATE DATABASE assp_test CHARACTER SET utf8mb4;
+          CREATE USER 'assp_test'@'127.0.0.1' IDENTIFIED BY '$password';
+          CREATE USER 'assp_test'@'localhost' IDENTIFIED BY '$password';
+          GRANT ALL PRIVILEGES ON assp_test.* TO 'assp_test'@'127.0.0.1';
+          GRANT ALL PRIVILEGES ON assp_test.* TO 'assp_test'@'localhost';
+          SQL
+          echo "ASSPNG_TEST_DB_URL=mysql+pymysql://assp_test:$password@127.0.0.1:3306/assp_test" >> "$GITHUB_ENV"
+      - name: pytest with the coverage gate
+        run: >
+          python3 -m pytest -rs
+          --cov=asspng.smtp --cov=asspng.proxy --cov=asspng.checks --cov=asspng.state
+          --cov-report=term-missing --cov-fail-under=85
+
+  load:
+    # Nightly: smtp-source -> ASSP-NG -> smtp-sink (spec 10.2, layer 5).
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install packages
+        run: |
+          apt-get update
+          printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+          chmod +x /usr/sbin/policy-rc.d
+          echo "postfix postfix/main_mailer_type select No configuration" | debconf-set-selections
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git redis-server postfix $PYTHON_PACKAGES
+      - uses: actions/checkout@v4
+      - name: Load test
+        run: |
+          bash tests/load/run_load.sh results.md
+          cat results.md
+          cat results.md >> "$GITHUB_STEP_SUMMARY"

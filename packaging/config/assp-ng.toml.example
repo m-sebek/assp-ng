@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# ASSP-NG system configuration, installed as /etc/assp-ng/assp-ng.toml (root:assp-ng, 0640).
+# The file holds the database password, so keep it unreadable for other users.
+#
+# This file is read at start and on reload (systemctl reload assp-ng-proxy). Policy settings
+# (scoring, limits, test mode) live in default.toml, domain.d/ and user.d/ instead; see
+# 'assp-ng config doc' for every setting. Check your edits with 'assp-ng config check'.
+
+# Name of this instance in logs and alerts; defaults to the host name.
+instance = "mx1"
+# Fully qualified name this server presents and uses in alerts.
+hostname = "mx1.example.com"
+
+[database]
+# SQLAlchemy URL of the MariaDB database. Replace PASSWORD with the one you chose when you
+# created the database user (docs/installation.md).
+url = "mysql+pymysql://asspng:PASSWORD@localhost/asspng"
+
+[redis]
+url = "redis://localhost:6379/0"
+# Every key ASSP-NG stores in Redis starts with this prefix.
+key_prefix = "asspng:"
+
+[health]
+# Read-only health endpoint (GET /health). It must stay on a loopback address.
+listen = "127.0.0.1:8025"
+
+# Public inbound listener. The backend is Postfix's internal smtpd, which must accept XCLIENT
+# from 127.0.0.1 ('assp-ng postfix plan' shows the Postfix side).
+[[listener]]
+name = "inbound"
+kind = "smtp"
+port = 25
+ipv4 = true
+ipv6 = true
+backend = "127.0.0.1:10125"
+xclient = true
+
+# Mail submission with STARTTLS. Requires a [[tls.certificate]] and AUTH.
+[[listener]]
+name = "submission"
+kind = "submission"
+port = 587
+ipv4 = true
+ipv6 = true
+backend = "127.0.0.1:10587"
+xclient = true
+
+# Optional: implicit TLS on port 465.
+# [[listener]]
+# name = "submissions"
+# kind = "submissions"
+# port = 465
+# ipv4 = true
+# ipv6 = true
+# backend = "127.0.0.1:10587"
+# xclient = true
+
+# Shared certificate store. SMTP listeners choose the certificate by SNI and fall back to the
+# first entry. The certbot deploy hook keeps these files current (docs/installation.md).
+[[tls.certificate]]
+name = "mx1"
+hostnames = ["mx1.example.com"]
+cert = "/etc/assp-ng/tls/mx1.example.com/fullchain.pem"
+key  = "/etc/assp-ng/tls/mx1.example.com/privkey.pem"
+
+[penalty_box]
+# Score at which a network is blocked, and how long each repeated offence blocks it.
+threshold = 50
+ladder = ["24h", "7d", "30d"]
+
+[alerts]
+# Where alerts go. Leave a value empty to disable that channel.
+email = "admin@example.com"
+webhook = ""

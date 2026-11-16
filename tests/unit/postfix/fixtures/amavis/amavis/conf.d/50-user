@@ -1,0 +1,6 @@
+use strict;
+# DKIM signing
+$enable_dkim_verification = 1;
+dkim_key('example.org', 'dkim', '/var/lib/dkim/example.org.pem');
+@dkim_signature_options_bysender_maps = ( { '.' => { ttl => 21*24*3600, c => 'relaxed/simple' } } );
+1;

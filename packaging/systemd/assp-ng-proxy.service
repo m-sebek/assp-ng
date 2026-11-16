@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[Unit]
+Description=ASSP-NG SMTP proxy
+Wants=network-online.target redis-server.service mariadb.service
+After=network-online.target redis-server.service mariadb.service
+OnFailure=assp-ng-notify@%n.service
+
+[Service]
+Type=notify
+User=assp-ng
+Group=assp-ng
+ExecStart=/usr/bin/python3 -m asspng.proxy --config /etc/assp-ng/assp-ng.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+WatchdogSec=30
+TimeoutStopSec=45
+Environment=MALLOC_ARENA_MAX=2 PYTHONPATH=/opt/assp-ng
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+StateDirectory=assp-ng
+LogsDirectory=assp-ng
+RuntimeDirectory=assp-ng
+RuntimeDirectoryPreserve=restart
+# Design spec section 9: the control socket and the logs (which hold personal data) must not be
+# world-reachable, so the three managed directories are 0750 instead of systemd's default 0755.
+RuntimeDirectoryMode=0750
+StateDirectoryMode=0750
+LogsDirectoryMode=0750
+MemoryHigh=384M
+MemoryMax=512M
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

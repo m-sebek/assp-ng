@@ -1,0 +1,9 @@
+# HAND-WRITTEN stand-in for real postconf output (upstream format); replace with captures
+# from the test server.
+relay/unix/syslog_name = postfix/$service_name
+127.0.0.1:10125/inet/smtpd_sasl_auth_enable = no
+127.0.0.1:10125/inet/smtpd_authorized_xclient_hosts = 127.0.0.1
+127.0.0.1:10587/inet/smtpd_sasl_auth_enable = yes
+127.0.0.1:10587/inet/smtpd_tls_auth_only = no
+127.0.0.1:10587/inet/smtpd_authorized_xclient_hosts = 127.0.0.1
+127.0.0.1:10587/inet/smtpd_client_restrictions = permit_sasl_authenticated,reject

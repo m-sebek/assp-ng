@@ -1,0 +1,42 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# certbot deploy hook: copy a renewed certificate to /etc/assp-ng/tls/<name>/ (root:assp-ng,
+# 0640) and reload ASSP-NG. certbot runs it as root with RENEWED_LINEAGE set to
+# /etc/letsencrypt/live/<name>.
+set -eu
+
+TLS_DIR="${ASSPNG_TLS_DIR:-/etc/assp-ng/tls}"
+
+: "${RENEWED_LINEAGE:?RENEWED_LINEAGE is not set}"
+name="$(basename -- "$RENEWED_LINEAGE")"
+case "$name" in
+    "" | .* | *[!A-Za-z0-9._-]*)
+        echo "assp-ng-deploy-hook: refusing unsafe lineage name: $name" >&2
+        exit 1
+        ;;
+esac
+
+for f in fullchain.pem privkey.pem; do
+    if [ ! -r "$RENEWED_LINEAGE/$f" ]; then
+        echo "assp-ng-deploy-hook: cannot read $RENEWED_LINEAGE/$f" >&2
+        exit 1
+    fi
+done
+
+dest="$TLS_DIR/$name"
+install -d -m 0750 -o root -g assp-ng "$dest"
+
+# Install under a temporary name in the target directory, then rename: a reader never sees a
+# half-written file, and the key and chain are replaced as close together as possible.
+tmp_suffix=".new.$$"
+trap 'rm -f "$dest/fullchain.pem$tmp_suffix" "$dest/privkey.pem$tmp_suffix"' EXIT
+for f in fullchain.pem privkey.pem; do
+    install -m 0640 -o root -g assp-ng "$RENEWED_LINEAGE/$f" "$dest/$f$tmp_suffix"
+done
+for f in fullchain.pem privkey.pem; do
+    mv -f "$dest/$f$tmp_suffix" "$dest/$f"
+done
+
+if systemctl is-active --quiet assp-ng-proxy; then
+    systemctl reload assp-ng-proxy
+fi

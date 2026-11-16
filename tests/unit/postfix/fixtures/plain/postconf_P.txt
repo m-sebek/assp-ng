@@ -1,0 +1,3 @@
+# HAND-WRITTEN stand-in for real postconf output (upstream format); replace with captures
+# from the test server.
+relay/unix/syslog_name = postfix/$service_name
