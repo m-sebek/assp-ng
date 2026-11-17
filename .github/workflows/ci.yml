@@ -5,6 +5,7 @@ on:
   pull_request:
   schedule:
     - cron: "23 2 * * *"  # nightly: the load test
+  workflow_dispatch:  # manual run from the Actions tab: every job, including the load test
 
 permissions:
   contents: read
@@ -97,8 +98,8 @@ jobs:
           --cov-report=term-missing --cov-fail-under=85
 
   load:
-    # Nightly: smtp-source -> ASSP-NG -> smtp-sink (spec 10.2, layer 5).
-    if: github.event_name == 'schedule'
+    # Nightly or manual: smtp-source -> ASSP-NG -> smtp-sink (spec 10.2, layer 5).
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     container: debian:trixie
     steps:

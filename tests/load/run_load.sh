@@ -70,8 +70,37 @@ redis-server --port "$redis_port" --bind 127.0.0.1 --dir "$work/redis" --save ""
     --appendonly no >"$work/redis.out" 2>&1 &
 pids+=($!)
 
-smtp-sink -c 127.0.0.1:"$sink_port" 1024 >"$work/sink.out" 2>&1 &
-pids+=($!)
+# smtp-sink refuses to run as root without -u (CI containers run as root). -m raises its
+# limit of simultaneous connections (default 256) above the number of test sessions.
+sink_opts=(-c -m "$((sessions + 50))")
+if [ "$(id -u)" -eq 0 ]; then
+    sink_opts+=(-u nobody)
+fi
+smtp-sink "${sink_opts[@]}" 127.0.0.1:"$sink_port" 1024 >"$work/sink.out" 2>&1 &
+sink=$!
+pids+=("$sink")
+
+# Wait until a process accepts connections on a port; fail with its output if it dies or
+# never comes up.
+wait_for_port() {
+    local name=$1 pid=$2 port=$3 out=$4
+    for _ in $(seq 1 100); do
+        if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+            return 0
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "ERROR: $name did not start:" >&2
+            cat "$out" >&2
+            exit 1
+        fi
+        sleep 0.2
+    done
+    echo "ERROR: $name does not accept connections on port $port after 20 s:" >&2
+    cat "$out" >&2
+    exit 1
+}
+
+wait_for_port smtp-sink "$sink" "$sink_port" "$work/sink.out"
 
 # A temporary configuration: no limits in the way, the local domain in a SQLite database.
 cat >"$work/etc/assp-ng.toml" <<TOML
@@ -121,17 +150,7 @@ PY
 proxy=$!
 pids+=("$proxy")
 
-for _ in $(seq 1 100); do
-    if (exec 3<>"/dev/tcp/127.0.0.1/$proxy_port") 2>/dev/null; then
-        break
-    fi
-    if ! kill -0 "$proxy" 2>/dev/null; then
-        echo "ERROR: the proxy did not start:" >&2
-        cat "$work/proxy.out" >&2
-        exit 1
-    fi
-    sleep 0.2
-done
+wait_for_port "the proxy" "$proxy" "$proxy_port" "$work/proxy.out"
 
 sleep 2
 baseline=$(rss_mb "$proxy")
@@ -154,6 +173,10 @@ source_end=$(date +%s.%N)
 if [ "$source_status" -ne 0 ]; then
     echo "ERROR: smtp-source failed:" >&2
     cat "$work/source.out" >&2
+    echo "--- smtp-sink output:" >&2
+    cat "$work/sink.out" >&2
+    echo "--- end of the proxy log:" >&2
+    tail -n 30 "$work/logs/assp-ng.log" >&2 2>/dev/null || true
     exit 1
 fi
 

@@ -72,8 +72,13 @@ Items marked ⚠ touch security or privacy.
   `-M` stand-ins omit the command arguments (T34).
 - The ISPConfig template mechanism.
 - `install.sh` at run time. The code swap and its recovery were only checked statically (T35).
-- The nightly load job (`smtp-source` → ASSP-NG → `smtp-sink`) has not run yet. The unit and
-  integration CI jobs passed on 2026-11-16.
+- The load job (`smtp-source` → ASSP-NG → `smtp-sink`) has not produced numbers yet.
+  - Its first nightly run (2026-11-17) failed at the start: `smtp-sink` refuses to run as root
+    without `-u`, and CI containers run as root.
+  - `run_load.sh` now passes `-u nobody` as root, waits for `smtp-sink` before starting the
+    proxy, and raises `smtp-sink`'s connection limit.
+  - The job can also be started by hand (`workflow_dispatch`).
+  - The unit and integration CI jobs passed on 2026-11-16.
 
 ## 4. Open minor findings by area
 
@@ -194,6 +199,10 @@ Items marked ⚠ touch security or privacy.
 - In `_serve`'s `finally`, a `CancelledError` during the graceful `wait_closed` skips the cleanup.
   This is harmless, because `close()` aborts the tracked writers (T30).
 - A failed start leaves sessions accepted in that window running (T31).
+- `main()` prints only `cannot start: OSError` when the OSError has no errno. An example is
+  "AF_UNIX path too long" when `paths.run` is longer than the socket path limit allows (found
+  2026-11-17). Such messages carry no secrets and could be shown. A config check could also
+  reject a `paths.run` that is too long.
 - `localhost` in `health.listen` is trusted by name. It is resolved at bind time, and
   `/etc/hosts` is root-controlled (T31).
 
@@ -328,7 +337,7 @@ Items marked ⚠ touch security or privacy.
 | `HealthServer.close` waited before cancelling connections (T29) | C5 |
 | `_closed.set()` not in `finally` (T31) | C2 |
 | Signals during `start()` took the default action (T31) | C3 |
-| `cannot start: OSError` without errno (T31) | C4 |
+| `cannot start: OSError` without errno (T31) | C4 (errno and strerror are shown when present) |
 | Credential concern for listeners with AUTH and a remote backend (T34) | A4, ruling R65 |
 | ⚠ A DB test assertion could print the database URL on failure (T27) | The assertion no longer exists (re-checked 2026-11-16) |
 | ⚠ `config show` printed secrets in URL query parameters, such as `?password=` or `ssl_key_password=` (T32) | 2026-11-16: only known harmless parameters are shown, all others as `***` |
