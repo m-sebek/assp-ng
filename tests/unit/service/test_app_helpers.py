@@ -9,6 +9,7 @@ import dataclasses
 import ipaddress
 import logging
 import os
+import sqlite3
 import sys
 import time
 from collections.abc import Coroutine
@@ -19,14 +20,16 @@ import pytest
 
 from asspng.checks.base import CheckContext, Phase, SessionInfo
 from asspng.config.loader import load_config
-from asspng.config.model import CertificateConfig
+from asspng.config.model import CertificateConfig, ConfigSnapshot
 from asspng.config.policy import PolicyResolver
 from asspng.config.registry import Level
 from asspng.config.settings import REGISTRY
 from asspng.proxy.connections import ConnectionTracker
 from asspng.log.debug import DebugRules
 from asspng.service.alerts import Alerter
-from asspng.service.app_build import build_runtime, host_port, journal_wanted
+from asspng.db.migrate import HEAD_REVISION, upgrade
+from asspng.db.repository import DomainRepository
+from asspng.service.app_build import LocalDomains, build_runtime, host_port, journal_wanted
 from asspng.service.app_tasks import (
     AlertingHealth,
     Alerts,
@@ -382,3 +385,66 @@ def test_alerts_log_state_changes(caplog: pytest.LogCaptureFixture) -> None:
     Alerts(RecordingAlerter(), spawn).state_changed(StateMode.NORMAL, StateMode.DEGRADED, "x")
     assert "state mode NORMAL -> DEGRADED: x" in caplog.text
     assert len(sent) == 1
+
+
+# --- local domains: the schema check -------------------------------------------------------
+
+
+def domains_config(etc_dir: Path, tmp_path: Path, url: str) -> ConfigSnapshot:
+    config = load_config(etc_dir)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    return dataclasses.replace(config, system={**config.system, "database.url": url,
+                                               "paths.cache": str(cache)})
+
+
+def create_database(path: Path, revision: str) -> str:
+    """A migrated SQLite database with one domain, stamped with ``revision``."""
+    path.parent.mkdir(exist_ok=True)
+    url = f"sqlite:///{path}"
+    upgrade(url)
+    repo = DomainRepository(url, "t")
+    repo.add("db.test", include_subdomains=False, note=None, actor="t")
+    repo.close()
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE alembic_version SET version_num = ?", (revision,))
+    return url
+
+
+async def test_schema_is_checked_when_an_unreachable_database_comes_back(
+    etc_dir: Path, tmp_path: Path,
+    alerts: tuple[Alerts, RecordingAlerter, list[asyncio.Task[Any]]],
+) -> None:
+    # Unreachable at start, the schema check could not run. It must run before the first load,
+    # not be skipped for good: here the database comes back with another schema revision.
+    sender, alerter, tasks = alerts
+    path = tmp_path / "db" / "domains.sqlite"
+    domains = LocalDomains(domains_config(etc_dir, tmp_path, f"sqlite:///{path}"), sender)
+    await domains.start()  # the directory does not exist yet: unreachable
+    assert domains.refresher is not None and domains.holder.origin == "none"
+    create_database(path, "0002")
+    for _ in range(2):
+        await domains.refresher.refresh()
+        await settle(tasks)
+        assert domains.holder.origin == "none"  # never loaded from the mismatched schema
+        assert domains.db_ok is False
+    assert [event for event, _ in alerter.sent] == ["schema-mismatch"]  # once
+    domains.close()
+
+
+async def test_database_that_comes_back_with_the_head_schema_is_used(
+    etc_dir: Path, tmp_path: Path,
+    alerts: tuple[Alerts, RecordingAlerter, list[asyncio.Task[Any]]],
+) -> None:
+    sender, alerter, tasks = alerts
+    path = tmp_path / "db" / "domains.sqlite"
+    domains = LocalDomains(domains_config(etc_dir, tmp_path, f"sqlite:///{path}"), sender)
+    await domains.start()
+    assert domains.refresher is not None
+    create_database(path, HEAD_REVISION)
+    await domains.refresher.refresh()
+    await settle(tasks)
+    assert domains.holder.origin == "db" and domains.db_ok is True
+    assert domains.holder().is_local("db.test")
+    assert alerter.sent == []
+    domains.close()

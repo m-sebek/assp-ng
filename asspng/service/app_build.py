@@ -152,10 +152,18 @@ def _durations(config: ConfigSnapshot, key: str) -> tuple[int, ...]:
     return value
 
 
+class _SchemaMismatch(Exception):
+    """The database has another schema revision; its domains are not used."""
+
+
 class LocalDomains:
     """The local domains of the relay decision (spec 5.8): from the database, kept fresh by
     ``refresher``, or without a usable database from the snapshot; with neither they are
-    unavailable. ``holder`` is what the sessions ask."""
+    unavailable. ``holder`` is what the sessions ask.
+
+    The schema revision is checked at start. When the database is unreachable then, the check
+    runs before the first load instead; a mismatch found there is handled as at start.
+    """
 
     def __init__(self, config: ConfigSnapshot, alerts: Alerts) -> None:
         self.holder = DomainHolder()
@@ -164,12 +172,16 @@ class LocalDomains:
         self._config = config
         self._alerts = alerts
         self._source: DatabaseDomainSource | None = None
+        self._url = ""
+        self._schema_unchecked = False  # set by start, cleared by the loader thread
+        self._mismatch: str | None = None  # the alert message, once a mismatch is found
+        self._mismatch_alerted = False
 
     async def start(self) -> None:
         """Load the domains; ``refresher`` is set when the database is usable."""
         config = self._config
         snapshot = Path(config_text(config, "paths.cache")) / SNAPSHOT_FILE
-        url = config_text(config, "database.url")
+        url = self._url = config_text(config, "database.url")
         if not url or not await self._schema_matches(url):
             self.db_ok = not url
             await self._load_snapshot(snapshot)
@@ -188,16 +200,18 @@ class LocalDomains:
         try:
             revision = await asyncio.to_thread(current_revision, url)
         except Exception as exc:  # unreachable: the refresher retries and uses the snapshot
-            _log.warning("cannot read the database schema revision: %s", type(exc).__name__)
+            _log.warning("cannot read the database schema revision: %s; it is checked before "
+                         "the first load", type(exc).__name__)
+            self._schema_unchecked = True
             return True
         if revision == HEAD_REVISION:
             return True
-        message = (f"database schema revision {revision or 'none'} does not match "
-                   f"{HEAD_REVISION}; local domains come from the snapshot until "
-                   "'assp-ng db upgrade' has run and the service is restarted")
+        self._report_mismatch(_mismatch_message(revision))
+        return False
+
+    def _report_mismatch(self, message: str) -> None:
         _log.error("%s", message)
         self._alerts.send("schema-mismatch", message)
-        return False
 
     async def _load_snapshot(self, path: Path) -> None:
         entries = await asyncio.to_thread(load_snapshot, path)
@@ -210,11 +224,30 @@ class LocalDomains:
         _log.info("local domains loaded from the snapshot (%d entries)", len(entries))
 
     def _load(self, source: DatabaseDomainSource) -> list[DomainEntry]:
-        """The refresher's loader; runs in a worker thread."""
+        """The refresher's loader; runs in a worker thread. A schema mismatch fails every
+        load, so the refresher keeps the snapshot, as when the mismatch is found at start."""
+        if self._mismatch is not None:
+            raise _SchemaMismatch
+        if self._schema_unchecked:
+            revision = current_revision(self._url)  # raises while still unreachable
+            if revision != HEAD_REVISION:
+                self._mismatch = _mismatch_message(revision)
+                raise _SchemaMismatch
+            self._schema_unchecked = False
         entries = source.load()
         self.db_ok = True
         return entries
 
     def _on_db_down(self, down_s: float) -> None:
         self.db_ok = False
-        self._alerts.database_down(down_s)
+        if self._mismatch is None:
+            self._alerts.database_down(down_s)
+        elif not self._mismatch_alerted:
+            self._mismatch_alerted = True
+            self._report_mismatch(self._mismatch)
+
+
+def _mismatch_message(revision: str | None) -> str:
+    return (f"database schema revision {revision or 'none'} does not match "
+            f"{HEAD_REVISION}; local domains come from the snapshot until "
+            "'assp-ng db upgrade' has run and the service is restarted")
