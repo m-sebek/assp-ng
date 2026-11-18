@@ -204,7 +204,18 @@ for round in $(seq 1 "$rounds"); do
     run_round "$round"
 done
 
-rate=$(awk -v n="$((messages * rounds))" -v t="$source_seconds" 'BEGIN { printf "%.0f", n / t }')
+# smtp-source does not fail on every lost message: check that the proxy handed each one to
+# smtp-sink (one maillog line with result=accepted per message).
+expected=$((messages * rounds))
+delivered=$(grep -c ' result=accepted ' "$work/logs/maillog.log" 2>/dev/null || true)
+if [ "${delivered:-0}" -ne "$expected" ]; then
+    echo "ERROR: the proxy passed ${delivered:-0} of $expected messages to smtp-sink" >&2
+    echo "--- end of the proxy log:" >&2
+    tail -n 30 "$work/logs/assp-ng.log" >&2 2>/dev/null || true
+    exit 1
+fi
+
+rate=$(awk -v n="$expected" -v t="$source_seconds" 'BEGIN { printf "%.0f", n / t }')
 
 table=$(cat <<TABLE
 | Messages per round | Rounds | Sessions | Message size (bytes) | Messages/s | RSS baseline (MiB) | RSS peak (MiB) | RSS ${idle_wait} s after round 1 (MiB) | RSS ${idle_wait} s after round $rounds (MiB) |
