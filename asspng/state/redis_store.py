@@ -34,6 +34,59 @@ return v
 """
 
 
+# Atomic hash update (StateStore.update_hash) that fails with no side effects on a key of
+# another type or a non-integer field. ARGV: ttl ('' = none), then three counted lists of
+# field/value pairs: the additions, the values to set and the defaults.
+_UPDATE_HASH_SCRIPT = """
+local t = redis.call('TYPE', KEYS[1]).ok
+if t ~= 'none' and t ~= 'hash' then
+  return redis.error_reply('WRONGTYPE Operation against a key holding the wrong kind of value')
+end
+local i = 2
+local function pairs_at()
+  local n = tonumber(ARGV[i])
+  local list = {}
+  for j = 1, n do
+    list[j] = {ARGV[i + 2 * j - 1], ARGV[i + 2 * j]}
+  end
+  i = i + 2 * n + 1
+  return list
+end
+local adds, sets, defaults = pairs_at(), pairs_at(), pairs_at()
+local results = {}
+for j, pair in ipairs(adds) do
+  local old = redis.call('HGET', KEYS[1], pair[1])
+  local value = tonumber(old or '0')
+  if value == nil or math.floor(value) ~= value then
+    return redis.error_reply('WRONGTYPE hash field is not an integer')
+  end
+  results[j] = value + tonumber(pair[2])
+end
+for j, pair in ipairs(adds) do
+  redis.call('HSET', KEYS[1], pair[1], results[j])
+end
+for _, pair in ipairs(sets) do
+  redis.call('HSET', KEYS[1], pair[1], pair[2])
+end
+for _, pair in ipairs(defaults) do
+  redis.call('HSETNX', KEYS[1], pair[1], pair[2])
+end
+if ARGV[1] == '' then
+  redis.call('PERSIST', KEYS[1])
+else
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return results
+"""
+
+
+def _pair_args(items: Mapping[str, object]) -> list[str]:
+    args = [str(len(items))]
+    for field, value in items.items():
+        args += [field, str(value)]
+    return args
+
+
 def _escape_glob(text: str) -> str:
     return "".join("\\" + c if c in _GLOB_SPECIALS else c for c in text)
 
@@ -117,6 +170,15 @@ class RedisStore(StateStore):
             if ttl_s is not None:
                 commands.append(("expire", (k, ttl_s)))
         await self._transaction("set_hash", *commands)
+
+    async def update_hash(self, key: str, *, add: Mapping[str, int], values: Mapping[str, str],
+                          defaults: Mapping[str, str], ttl_s: int | None) -> dict[str, int]:
+        args = ["" if ttl_s is None else str(ttl_s), *_pair_args(add), *_pair_args(values),
+                *_pair_args(defaults)]
+        results: list[int] = await self._run(
+            "update_hash",
+            lambda: self._redis.eval(_UPDATE_HASH_SCRIPT, 1, self._prefix + key, *args))
+        return {field: int(value) for field, value in zip(add, results)}
 
     async def delete(self, *keys: str) -> int:
         if not keys:

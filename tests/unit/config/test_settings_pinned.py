@@ -17,7 +17,7 @@ PINNED: list[tuple[str, object, Level]] = [
     ("database.url", '', S),
     ("redis.url", 'redis://localhost:6379/0', S),
     ("redis.key_prefix", 'asspng:', S),
-    ("redis.op_timeout_ms", 200, S),
+    ("redis.op_timeout_ms", 1000, S),
     ("state.on_redis_failure", 'degraded', S),
     ("state.failures_to_degrade", 3, S),
     ("state.unreachable_to_degrade_s", 2, S),

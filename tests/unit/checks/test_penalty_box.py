@@ -2,6 +2,7 @@
 """Penalty box: score accumulation, escalating blocks, history, and the connect check."""
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
@@ -157,6 +158,64 @@ async def test_manual_block_no_history(box: PenaltyBox, fake_clock: FakeClock) -
     assert st.blocked_until == fake_clock.now() + 3600
     fake_clock.advance(3601)
     assert await box.blocked_until(NET) is None
+
+
+async def test_manual_block_does_not_shorten_an_active_block(
+        box: PenaltyBox, fake_clock: FakeClock) -> None:
+    await box.add_score(NET, 100, "auto")  # level 1: 24 h
+    until = (await box.status(NET)).blocked_until
+    assert await box.block(NET, H, "manual") == until  # the block in force is returned
+    st = await box.status(NET)
+    assert (st.blocked_until, st.level, st.reason) == (until, 1, "auto")
+
+
+async def test_manual_block_extends_a_shorter_block(
+        box: PenaltyBox, fake_clock: FakeClock) -> None:
+    await box.block(NET, H, "first")
+    assert await box.block(NET, 2 * D, "longer") == fake_clock.now() + 2 * D
+    st = await box.status(NET)
+    assert (st.blocked_until, st.level, st.reason) == (fake_clock.now() + 2 * D, 0, "longer")
+
+
+class YieldingStore:
+    """Delegates to a store but yields to the event loop before every operation, as a store
+    behind a network connection does, so concurrent callers interleave."""
+
+    def __init__(self, inner: MemoryStore) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._inner, name)
+        if not asyncio.iscoroutinefunction(attr):
+            return attr
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            await asyncio.sleep(0)
+            return await attr(*args, **kwargs)
+
+        return call
+
+
+async def test_concurrent_scores_are_all_counted(
+        make_box: Callable[..., PenaltyBox], store: MemoryStore, fake_clock: FakeClock) -> None:
+    box = PenaltyBox(cast(Any, YieldingStore(store)), threshold=100, score_cap=150,
+                     score_ttl_s=24 * H, ladder_s=(24 * H, 7 * D), history_s=90 * D,
+                     clock=fake_clock.now)
+    await asyncio.gather(*(box.add_score(NET, 10, f"hit {i}") for i in range(5)))
+    st = await box.status(NET)
+    assert (st.score, st.hits) == (50, 5)
+
+
+async def test_concurrent_threshold_crossings_block_once(
+        store: MemoryStore, fake_clock: FakeClock) -> None:
+    box = PenaltyBox(cast(Any, YieldingStore(store)), threshold=100, score_cap=150,
+                     score_ttl_s=24 * H, ladder_s=(24 * H, 7 * D), history_s=90 * D,
+                     clock=fake_clock.now)
+    await box.add_score(NET, 60, "first")
+    await asyncio.gather(box.add_score(NET, 50, "a"), box.add_score(NET, 50, "b"))
+    st = await box.status(NET)
+    assert (st.level, st.history) == (1, 1)  # one block on the first step, not two
+    assert st.blocked_until == fake_clock.now() + 24 * H
 
 
 async def test_list_sorted_with_ipv6(box: PenaltyBox) -> None:

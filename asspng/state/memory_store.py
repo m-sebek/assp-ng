@@ -130,6 +130,28 @@ class MemoryStore(StateStore):
             return
         self._store(key, dict(values), self._expiry(ttl_s))
 
+    async def update_hash(self, key: str, *, add: Mapping[str, int], values: Mapping[str, str],
+                          defaults: Mapping[str, str], ttl_s: int | None) -> dict[str, int]:
+        # No await inside: atomic within the event loop.
+        entry = self._live(key)
+        current: dict[str, str] = {}
+        if entry is not None:
+            if not isinstance(entry.value, dict):
+                raise StateTypeError(f"wrong type for key {key!r}: not a hash")
+            current = dict(entry.value)
+        added: dict[str, int] = {}
+        for field, amount in add.items():
+            try:
+                added[field] = int(current.get(field, "0")) + amount
+            except ValueError:
+                raise StateTypeError(f"hash field {field!r} of key {key!r} is not an integer")
+        current.update({field: str(value) for field, value in added.items()})
+        current.update(values)
+        for field, value in defaults.items():
+            current.setdefault(field, value)
+        self._store(key, current, self._expiry(ttl_s))
+        return added
+
     async def delete(self, *keys: str) -> int:
         removed = 0
         for key in keys:

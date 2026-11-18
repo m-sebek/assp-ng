@@ -55,7 +55,7 @@ _add("banner.text", "str", "", "Extra text appended to the SMTP greeting banner.
 _add("database.url", "str", "", "Database connection URL for persistent data.")
 _add("redis.url", "str", "redis://localhost:6379/0", "Redis connection URL for shared state.")
 _add("redis.key_prefix", "str", "asspng:", "Prefix for every key ASSP-NG stores in Redis.")
-_add("redis.op_timeout_ms", "int", 200,
+_add("redis.op_timeout_ms", "int", 1000,
      "Maximum time in milliseconds for one Redis operation.", minimum=1)
 _add("state.on_redis_failure", "str", "degraded",
      "Behaviour when Redis fails: degraded keeps working on local memory, "

@@ -272,9 +272,14 @@ def cmd_pb_block(args: argparse.Namespace, deps: Deps) -> int:
     seconds = _duration(args.duration)
     if seconds <= 0:
         raise CliError(2, "the duration must be positive")
-    _run_pb(deps, config, lambda box, store: box.block(net, seconds, args.reason))
+    start = time.time()
+    until = _run_pb(deps, config, lambda box, store: box.block(net, seconds, args.reason))
     _audit(deps, config, "pb.block", net, {"duration_s": seconds, "reason": args.reason})
-    print(f"{net} blocked for {_fmt_remaining(seconds)}")
+    if until > start + seconds + 1:  # a longer block was in force and is kept
+        print(f"{net} is already blocked for longer ({_fmt_remaining(until - time.time())} "
+              "left); the block is unchanged")
+    else:
+        print(f"{net} blocked for {_fmt_remaining(seconds)}")
     return 0
 
 

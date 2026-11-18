@@ -554,7 +554,10 @@ DEGRADED --(MemoryStore failure or memory soft limit reached)--> TEMPFAIL
 TEMPFAIL --(Redis healthy again)--> NORMAL
 ```
 
-- A Redis operation has a 200 ms timeout. A single slow reply does not change the mode.
+- A Redis operation has a 1000 ms timeout (`redis.op_timeout_ms`). A single slow reply does not
+  change the mode. (The first default, 200 ms, was exceeded under saturation by the proxy's own
+  event-loop lag, not by Redis, and switched to DEGRADED in every load round; raised
+  2026-11-18.)
 - **DEGRADED:** all checks keep running on `MemoryStore`. Health reports `degraded` and an alert
   is raised.
 - **TEMPFAIL:** new connections get `421 4.3.0 Service temporarily unavailable` at the greeting.

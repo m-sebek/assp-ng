@@ -47,6 +47,12 @@ class FlakyStore(MemoryStore):
         self._hit()
         await super().set_hash(key, values, ttl_s)
 
+    async def update_hash(self, key: str, *, add: Mapping[str, int], values: Mapping[str, str],
+                          defaults: Mapping[str, str], ttl_s: int | None) -> dict[str, int]:
+        self._hit()
+        return await super().update_hash(key, add=add, values=values, defaults=defaults,
+                                         ttl_s=ttl_s)
+
     async def delete(self, *keys: str) -> int:
         self._hit()
         return await super().delete(*keys)
@@ -103,6 +109,7 @@ CALLS: dict[str, Callable[[StateStore], Awaitable[object]]] = {
     "get": lambda s: s.get("k"),
     "get_hash": lambda s: s.get_hash("h"),
     "set_hash": lambda s: s.set_hash("h", {"a": "1"}, 60),
+    "update_hash": lambda s: s.update_hash("u", add={"n": 1}, values={}, defaults={}, ttl_s=60),
     "delete": lambda s: s.delete("k", "h"),
     "keys": lambda s: s.keys("*"),
     "ttl": lambda s: s.ttl("k"),
@@ -507,3 +514,16 @@ async def test_watchers_see_transitions_until_unwatched(
     await rig.ctl.probe()
     assert rig.changes[-1] == (T, N, "redis recovered")
     assert seen == [(N, T, "operator request")]
+
+
+async def test_primary_failure_log_names_the_underlying_error(
+    fake_clock: FakeClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    # "StateError" alone hid that the failures under load were timeouts.
+    rig = make(fake_clock)
+    error = StateError("redis incr failed: TimeoutError")
+    error.__cause__ = TimeoutError()
+    rig.primary_down(error)
+    with caplog.at_level(logging.WARNING, logger="asspng.state.controller"):
+        await rig.ctl.incr("n", None)
+    assert "redis state operation failed (StateError: TimeoutError)" in caplog.text

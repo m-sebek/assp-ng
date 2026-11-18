@@ -115,7 +115,10 @@ class StateController(StateStore):
         self._first_failure_at = None
 
     def _primary_failed(self, exc: Exception) -> None:
-        log.warning("redis state operation failed (%s)", type(exc).__name__)
+        # Type names only: the messages of state errors may carry keys.
+        cause = exc.__cause__
+        log.warning("redis state operation failed (%s%s)", type(exc).__name__,
+                    f": {type(cause).__name__}" if cause is not None else "")
         if self._mode is not StateMode.NORMAL:
             return  # started before a concurrent switch, which already left NORMAL
         now = self._clock()
@@ -175,6 +178,11 @@ class StateController(StateStore):
 
     async def set_hash(self, key: str, values: Mapping[str, str], ttl_s: int | None) -> None:
         await self._run("set_hash", lambda s: s.set_hash(key, values, ttl_s))
+
+    async def update_hash(self, key: str, *, add: Mapping[str, int], values: Mapping[str, str],
+                          defaults: Mapping[str, str], ttl_s: int | None) -> dict[str, int]:
+        return await self._run("update_hash", lambda s: s.update_hash(
+            key, add=add, values=values, defaults=defaults, ttl_s=ttl_s))
 
     async def delete(self, *keys: str) -> int:
         return await self._run("delete", lambda s: s.delete(*keys))

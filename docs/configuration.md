@@ -20,7 +20,7 @@ Besides these values, `assp-ng.toml` holds the `[[listener]]` and `[[tls.certifi
 | `database.url` | str | `""` | system | Database connection URL for persistent data. |
 | `redis.url` | str | `"redis://localhost:6379/0"` | system | Redis connection URL for shared state. |
 | `redis.key_prefix` | str | `"asspng:"` | system | Prefix for every key ASSP-NG stores in Redis. |
-| `redis.op_timeout_ms` | int | `200` | system | Maximum time in milliseconds for one Redis operation. Allowed: at least 1. |
+| `redis.op_timeout_ms` | int | `1000` | system | Maximum time in milliseconds for one Redis operation. Allowed: at least 1. |
 | `state.on_redis_failure` | str | `"degraded"` | system | Behaviour when Redis fails: degraded keeps working on local memory, tempfail answers with a temporary SMTP error. Allowed: one of degraded, tempfail. |
 | `state.failures_to_degrade` | int | `3` | system | Consecutive Redis failures after which the state backend switches to degraded mode. Allowed: at least 1. |
 | `state.unreachable_to_degrade_s` | int | `2` | system | Seconds Redis may stay unreachable before the state backend switches to degraded mode; 0 switches at the first failure. Allowed: at least 0. |

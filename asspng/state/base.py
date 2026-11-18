@@ -37,6 +37,17 @@ class StateStore(Protocol):
         """Replace the whole hash (``ttl_s=None``: no expiry)."""
         ...
 
+    async def update_hash(self, key: str, *, add: Mapping[str, int], values: Mapping[str, str],
+                          defaults: Mapping[str, str], ttl_s: int | None) -> dict[str, int]:
+        """Atomically update a hash, creating it if missing, and return the fields in ``add``.
+
+        Adds to the integer fields in ``add`` (a missing field counts as 0), sets ``values``,
+        sets the fields of ``defaults`` that are missing, and sets the expiry (``ttl_s=None``:
+        no expiry). ``add`` must not be empty. On a key of another type, or a field in ``add``
+        that is not an integer, it raises ``StateTypeError`` and changes nothing.
+        """
+        ...
+
     async def delete(self, *keys: str) -> int:
         """Delete keys; return how many existing keys were removed."""
         ...

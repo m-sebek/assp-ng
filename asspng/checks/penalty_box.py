@@ -3,6 +3,11 @@
 
 Keys: ``pb:<net>`` (score, reason, hits, first, last), ``pb:block:<net>`` (until, level,
 reason) and ``pb:hist:<net>`` (a counter of past blocks). All hash fields are strings.
+
+Scores are added atomically (``StateStore.update_hash``), so concurrent hits from one network,
+in this process or in another instance, all count. When they cross the threshold together,
+only the caller whose ``delete`` removes the score entry blocks the network, so one crossing
+is one step on the ladder.
 """
 from __future__ import annotations
 
@@ -70,7 +75,7 @@ class PenaltyBox:
         hist = await self._store.get(_HIST + net)
         return PenaltyStatus(
             net=net,
-            score=int(entry.get("score", "0")),
+            score=min(self._cap, int(entry.get("score", "0"))),
             reason=block.get("reason", "") if block else entry.get("reason", ""),
             hits=int(entry.get("hits", "0")),
             blocked_until=float(block["until"]) if block else None,
@@ -81,26 +86,15 @@ class PenaltyBox:
     async def add_score(self, net: str, points: int, reason: str) -> PenaltyStatus:
         if points <= 0 or await self._block_hash(net):
             return await self.status(net)
-        now = self._clock()
-        entry = await self._store.get_hash(_P + net)
-        score = min(self._cap, int(entry.get("score", "0")) + points)
-        if score >= self._threshold:
+        now = repr(self._clock())
+        added = await self._store.update_hash(
+            _P + net, add={"score": points, "hits": 1}, values={"reason": reason, "last": now},
+            defaults={"first": now}, ttl_s=self._score_ttl)
+        crossed = min(self._cap, added["score"]) >= self._threshold
+        if crossed and await self._store.delete(_P + net):
             history = await self._store.incr(_HIST + net, self._history_s)
             level = min(history, len(self._ladder))
             await self._set_block(net, self._ladder[level - 1], level, reason)
-            await self._store.delete(_P + net)
-            return await self.status(net)
-        await self._store.set_hash(
-            _P + net,
-            {
-                "score": str(score),
-                "reason": reason,
-                "hits": str(int(entry.get("hits", "0")) + 1),
-                "first": entry.get("first", repr(now)),
-                "last": repr(now),
-            },
-            self._score_ttl,
-        )
         return await self.status(net)
 
     async def _set_block(self, net: str, duration_s: int, level: int, reason: str) -> None:
@@ -111,9 +105,15 @@ class PenaltyBox:
             duration_s,
         )
 
-    async def block(self, net: str, duration_s: int, reason: str) -> None:
-        """Manual block: level 0, the escalation history is not touched."""
+    async def block(self, net: str, duration_s: int, reason: str) -> float:
+        """Manual block: level 0, the escalation history is not touched. A block in force that
+        lasts longer is kept. Return the time the block in force ends."""
+        active = await self._block_hash(net)
+        until = self._clock() + duration_s
+        if active and float(active["until"]) >= until:
+            return float(active["until"])
         await self._set_block(net, duration_s, 0, reason)
+        return until
 
     async def remove(self, net: str, *, forget: bool = False) -> None:
         keys = [_P + net, _BLOCK + net]

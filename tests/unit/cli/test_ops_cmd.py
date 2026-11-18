@@ -226,6 +226,17 @@ def test_pb_block_duration(run: Callable[..., int], env: Env,
     assert "abuse" in capsys.readouterr().out
 
 
+def test_pb_block_keeps_a_longer_active_block(run: Callable[..., int], env: Env,
+                                              capsys: pytest.CaptureFixture[str]) -> None:
+    assert run("pb", "block", "192.0.2.7", "--for", "2d", "--reason", "first") == 0
+    capsys.readouterr()
+    assert run("pb", "block", "192.0.2.7", "--for", "1h", "--reason", "shorter") == 0
+    out = capsys.readouterr().out
+    assert "192.0.2.7/32 is already blocked for longer" in out and "unchanged" in out
+    block = asyncio.run(env.store.get_hash("pb:block:192.0.2.7/32"))
+    assert block["reason"] == "first"
+
+
 def test_pb_invalid_ip_exits_2(run: Callable[..., int]) -> None:
     assert run("pb", "show", "not-an-ip") == 2
     assert run("pb", "remove", "999.1.1.1") == 2
@@ -567,7 +578,7 @@ def test_no_output_contains_the_db_password(
     assert codes[:4] == [1, 1, 1, 1]
 
 
-REDIS_ARGS = ("rediss://:redispw@r.example:6380/3", "zz:", 0.2)
+REDIS_ARGS = ("rediss://:redispw@r.example:6380/3", "zz:", 1.0)  # redis.op_timeout_ms 1000
 
 
 def test_redis_url_and_prefix_reach_the_store(run: Callable[..., int], env: Env) -> None:

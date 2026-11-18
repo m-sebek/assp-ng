@@ -155,3 +155,49 @@ class StoreContract:
     async def test_ping_and_publish(self, store_env: StoreEnv) -> None:
         assert await store_env.store.ping() is None
         assert await store_env.store.publish("events", "hello") is None
+
+    async def test_update_hash_adds_sets_and_fills_missing_fields(
+            self, store_env: StoreEnv) -> None:
+        s = store_env.store
+        assert await s.update_hash("h", add={"n": 2}, values={"a": "x"},
+                                   defaults={"f": "1"}, ttl_s=10) == {"n": 2}
+        assert await s.update_hash("h", add={"n": 3, "m": 1}, values={"a": "y"},
+                                   defaults={"f": "2"}, ttl_s=10) == {"n": 5, "m": 1}
+        assert await s.get_hash("h") == {"n": "5", "m": "1", "a": "y", "f": "1"}
+        ttl = await s.ttl("h")
+        assert ttl is not None and 9 <= ttl <= 10
+
+    async def test_update_hash_refreshes_the_ttl(self, store_env: StoreEnv) -> None:
+        s = store_env.store
+        await s.update_hash("h", add={"n": 1}, values={}, defaults={}, ttl_s=2)
+        await store_env.advance(1.2)
+        await s.update_hash("h", add={"n": 1}, values={}, defaults={}, ttl_s=2)
+        await store_env.advance(1.2)
+        assert await s.get_hash("h") == {"n": "2"}
+        await store_env.advance(1.0)
+        assert await s.get_hash("h") == {}
+
+    async def test_update_hash_without_ttl_persists(self, store_env: StoreEnv) -> None:
+        s = store_env.store
+        await s.set_hash("h", {"a": "1"}, 5)
+        await s.update_hash("h", add={"n": 1}, values={}, defaults={}, ttl_s=None)
+        assert await s.ttl("h") is None
+
+    async def test_update_hash_on_another_type_has_no_side_effects(
+            self, store_env: StoreEnv) -> None:
+        s = store_env.store
+        await s.incr("c", 5)
+        with pytest.raises(StateTypeError):
+            await s.update_hash("c", add={"n": 1}, values={"a": "x"}, defaults={}, ttl_s=100)
+        assert await s.get("c") == "1"
+        ttl = await s.ttl("c")
+        assert ttl is not None and ttl <= 5
+
+    async def test_update_hash_on_a_non_integer_field_has_no_side_effects(
+            self, store_env: StoreEnv) -> None:
+        s = store_env.store
+        await s.set_hash("h", {"n": "abc"}, None)
+        with pytest.raises(StateTypeError):
+            await s.update_hash("h", add={"n": 1}, values={"a": "x"}, defaults={}, ttl_s=100)
+        assert await s.get_hash("h") == {"n": "abc"}
+        assert await s.ttl("h") is None
