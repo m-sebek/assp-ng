@@ -18,10 +18,6 @@ Items marked ⚠ touch security or privacy.
 ## 1. Final review: "should fix" items left out of the fix wave
 
 - `normalize_domain`: ideographic or full-width dots can leave a trailing `.` in the key (T3).
-- `PenaltyBox.add_score` is a non-atomic read-modify-write (T16):
-  - concurrent threshold crossings from one network can raise the block history twice and skip
-    a ladder level, especially with `RedisStore`;
-  - a manual `block()` can shorten an active block.
 - Tests are missing for:
   - AUTH inside a transaction (503) (T25);
   - rollback of a domain change when the audit insert fails (T27);
@@ -34,20 +30,12 @@ Items marked ⚠ touch security or privacy.
   - **N5:** risky overrides are counted even when they equal the `main.cf` value (a false
     positive with amavis);
   - **N6:** the message "restore by hand" appears after the files were already restored.
-- ⚠ Log queues are unbounded: on a stalled disk, memory grows. This applies to the main logging
-  queue and to the debug log queue (T22, T23).
-- If the database is down at start, the schema check is skipped for good. It should run again
-  after the first successful domain refresh (T31).
-- CI and load test:
-  - the integration job should assert that `ASSPNG_TEST_DB_URL` is set;
-  - `run_load.sh` does not verify the delivered message count (T36).
 - AUTH handling (protocol details):
   - AUTH before EHLO;
   - a 503 is counted as a failed authentication;
   - 504 for an unsupported mechanism.
 - Sender-level defaults without AUTH.
 - Spool file I/O runs on the event loop.
-- ⚠ Third-party loggers bypass `RedactionFilter`.
 - logrotate configuration and `su`.
 - `MemoryStore` purges in O(n) when it is full.
 - The shutdown budget versus systemd `TimeoutStopSec`.
@@ -141,16 +129,6 @@ Items marked ⚠ touch security or privacy.
   - the reply to the quiet-period PING is not checked;
   - TCP keep-alive uses the OS default idle time.
 - The `_counter` log uses `key.rsplit`, which truncates IPv6 network keys in the log (T17).
-- Redis failures under saturation (found 2026-11-18). A load of 500 sessions at about 770
-  messages/s keeps one CPU core busy. Each round then caused about 500 to 650 failed Redis state
-  operations and about two switches to DEGRADED. Every failure was a `TimeoutError` at the
-  200 ms `redis.op_timeout_ms`. The cause is the event loop's lag (up to about 140 ms per step,
-  and an operation needs several steps), not Redis. The proxy keeps working from local memory
-  as designed. To decide:
-  - raise the default timeout, for example to 1000 ms;
-  - or not count a timeout as a Redis failure while the event loop itself lags.
-  The controller also logs only `StateError` and not the underlying type, which made the cause
-  hard to find.
 
 ### TLS and DNS
 
@@ -339,6 +317,12 @@ Items marked ⚠ touch security or privacy.
 
 | Finding | Fixed by |
 |---|---|
+| ⚠ Third-party loggers bypassed `RedactionFilter`: library records (redis, sqlalchemy, asyncio) went unredacted to logging's last-resort stderr handler (T22) | 2026-11-18: a second queue handler with the redaction filter on the root logger, from WARNING up |
+| ⚠ Log queues were unbounded: on a stalled disk, memory grew (T22, T23) | 2026-11-18: the main log queue and the debug log queue hold at most 10 000 entries; further ones are dropped, counted and reported once the writer catches up |
+| With the database down at start, the schema check was skipped for good (T31) | 2026-11-18: it runs before the first load instead; a mismatch keeps the snapshot and alerts once, as at start |
+| `PenaltyBox.add_score` was a non-atomic read-modify-write, so concurrent threshold crossings could block twice and skip a ladder level, and a manual `block()` could shorten an active block (T16) | 2026-11-18: `StateStore.update_hash` (a Lua script on Redis) adds the score atomically, one `delete` decides the single crossing, and a manual block keeps a longer one in force |
+| Redis failures under saturation: 500 sessions at about 770 messages/s kept one core busy, the event loop's lag (up to about 140 ms per step) exceeded the 200 ms `redis.op_timeout_ms`, and every load round switched to DEGRADED; the log named only `StateError` (found 2026-11-18) | 2026-11-18: the default is 1000 ms, and the log names the underlying error type |
+| The integration CI job did not check that `ASSPNG_TEST_DB_URL` is set, and `run_load.sh` did not verify the delivered message count (T36) | 2026-11-18: the job fails without the URL; the script counts the accepted messages in the maillog |
 | Listeners used asyncio's default listen backlog of 100. A burst of over 100 connections overflowed the accept queue; the kernel fell back to SYN cookies and dropped the connections it could not queue, which clients kept waiting on for a greeting (found 2026-11-18 by the load test) | 2026-11-18: `LISTEN_BACKLOG = socket.SOMAXCONN`, capped by the kernel at `net.core.somaxconn` |
 | The proxy imported Alembic only to read the schema revision, about 10 MB of RSS for the life of the service (found 2026-11-18) | 2026-11-18: `current_revision()` reads `alembic_version` with SQLAlchemy; only `db upgrade` imports Alembic |
 | Unquoted `@` in the local part accepted (T3) | A5, ruling R61 |
