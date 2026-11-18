@@ -73,3 +73,9 @@ per round (and a 65 s idle wait), the RSS after the second round was 7 MiB above
 |---|---|---|---|---|---|---|---|---|---|
 | Test server | pending: run on the test server | | | | | | | | |
 | Nightly CI, 2026-11-17 (manual run, before rounds existed) | 10000 | 1 | 500 | 2000 | 199 | 77.1 | 103.1 | 99.3 | – |
+| Nightly CI, 2026-11-18 (manual run) | 10000 | 2 | 500 | 2000 | 827 | 68.1 | 108.8 | 102.7 | 102.7 |
+
+The 2026-11-17 run predates two changes: the listeners still used a listen backlog of 100,
+which `smtp-source`'s 500 sessions overflowed, and the proxy still imported Alembic (about
+10 MiB). The backlog fix most likely explains the higher rate; CI runners vary, so the rate
+is only indicative.

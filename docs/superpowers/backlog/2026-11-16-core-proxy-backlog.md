@@ -72,7 +72,8 @@ Items marked ⚠ touch security or privacy.
   `-M` stand-ins omit the command arguments (T34).
 - The ISPConfig template mechanism.
 - `install.sh` at run time. The code swap and its recovery were only checked statically (T35).
-- The load job (`smtp-source` → ASSP-NG → `smtp-sink`) has not produced numbers yet.
+- The load job (`smtp-source` → ASSP-NG → `smtp-sink`) has produced CI numbers since
+  2026-11-17 (`docs/performance.md`), but none from the test server yet.
   - Its first nightly run (2026-11-17) failed at the start: `smtp-sink` refuses to run as root
     without `-u`, and CI containers run as root.
   - `run_load.sh` now passes `-u nobody` as root, waits for `smtp-sink` before starting the
