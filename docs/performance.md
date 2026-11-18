@@ -74,8 +74,25 @@ per round (and a 65 s idle wait), the RSS after the second round was 7 MiB above
 | Test server | pending: run on the test server | | | | | | | | |
 | Nightly CI, 2026-11-17 (manual run, before rounds existed) | 10000 | 1 | 500 | 2000 | 199 | 77.1 | 103.1 | 99.3 | – |
 | Nightly CI, 2026-11-18 (manual run) | 10000 | 2 | 500 | 2000 | 827 | 68.1 | 108.8 | 102.7 | 102.7 |
+| Nightly CI, 2026-11-18 (scheduled run) | 10000 | 2 | 500 | 2000 | 779 | 68.0 | 107.7 | 101.0 | 101.8 |
+| Nightly CI, 2026-11-18 (manual run, after the pre-deployment fixes) | 10000 | 2 | 500 | 2000 | 552 | 68.2 | 104.0 | 100.1 | 100.1 |
 
 The 2026-11-17 run predates two changes: the listeners still used a listen backlog of 100,
 which `smtp-source`'s 500 sessions overflowed, and the proxy still imported Alembic (about
 10 MiB). The backlog fix most likely explains the higher rate; CI runners vary, so the rate
 is only indicative.
+
+The last run is slower because of one of the pre-deployment fixes: `redis.op_timeout_ms` went
+from 200 to 1000 ms. At this load the proxy keeps one CPU core busy, and its event loop lags by
+more than 200 ms. With the old timeout, Redis operations therefore failed, and the proxy switched
+to its local memory store several times per run. That store is faster but not shared between
+instances. Now the state stays in Redis. A comparison on a development machine, with the
+current code and only the timeout changed (two runs each, 2 rounds of 10000 messages):
+
+| `redis.op_timeout_ms` | Messages/s | Proxy CPU per 10000 messages | Failed Redis operations | Switches to DEGRADED |
+|---|---|---|---|---|
+| 200 | about 800 | 12.6 s | about 1400 per run | 3 per run |
+| 1000 | about 595 | 17 s | 0 | none |
+
+Redis-backed state thus costs about 0.45 ms of CPU per message at saturation. Fewer Redis round
+trips per connection would win part of it back (backlog: State, penalty box and limits).

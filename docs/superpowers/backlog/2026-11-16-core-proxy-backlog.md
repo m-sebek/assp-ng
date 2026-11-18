@@ -129,6 +129,11 @@ Items marked ⚠ touch security or privacy.
   - the reply to the quiet-period PING is not checked;
   - TCP keep-alive uses the OS default idle time.
 - The `_counter` log uses `key.rsplit`, which truncates IPv6 network keys in the log (T17).
+- Redis round trips per connection (found 2026-11-18). With the state in Redis, a saturated proxy
+  handles about 595 instead of about 800 messages/s, and spends about 0.45 ms more CPU per
+  message (`docs/performance.md`). Each operation is a separate round trip; for example, the
+  penalty-box check reads three keys at every connect. A pipeline or one Lua script per check
+  would cut that. Not needed for the test server's load.
 
 ### TLS and DNS
 
