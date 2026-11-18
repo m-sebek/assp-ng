@@ -3,11 +3,13 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
-from asspng.log.debug import DebugLog, DebugRules, RuleKind, SessionTap
+from asspng.log.debug import DEBUG_QUEUE_MAX, DebugLog, DebugRules, RuleKind, SessionTap
 
 PASSWORD = "s3cr3t-Pa55word"
 
@@ -456,3 +458,35 @@ def test_close_after_a_failed_thread_start_does_not_raise(tmp_path, monkeypatch)
     log = DebugLog(tmp_path / "debug.log", 10_000, lambda: None)
     log.write("s1", "C>P", "line")
     log.close()
+
+
+def test_debug_queue_is_bounded(tmp_path):
+    assert make_log(tmp_path)._queue.maxsize == DEBUG_QUEUE_MAX == 10_000
+
+
+def test_full_debug_queue_drops_lines_and_says_so(tmp_path, monkeypatch):
+    # A stalled disk stops the writer thread: lines beyond the bound are dropped and counted.
+    gate = threading.Event()
+    log = DebugLog(tmp_path / "debug.log", 10_000_000, lambda: None, max_queued=2)
+    handle = log._handle
+
+    def slow(item):
+        gate.wait(5)
+        handle(item)
+
+    monkeypatch.setattr(log, "_handle", slow)
+    log.write("s1", "C>P", "first")
+    deadline = time.monotonic() + 5
+    while not log._queue.empty() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    for i in range(5):
+        log.write("s1", "C>P", f"line {i}")
+    gate.set()
+    log.close()
+    texts = [line.split(" ", 3)[1:] for line in read_lines(tmp_path)]
+    assert texts == [
+        ["s1", "C>P", "first"],
+        ["-", "!", "3 debug lines dropped: the debug log writer fell behind"],
+        ["s1", "C>P", "line 0"],
+        ["s1", "C>P", "line 1"],
+    ]

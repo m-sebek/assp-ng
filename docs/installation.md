@@ -231,6 +231,12 @@ Each `debug.log` line carries the time, the session id and a direction: the SMTP
 check, outcome, scores and duration in ms), `DNS` for the PTR lookup and `STATE` for the state
 mode at connect and on each change. AUTH payloads and message bodies are never written.
 
+Warnings and errors of the libraries ASSP-NG uses (Redis, SQLAlchemy, asyncio) also go to
+`assp-ng.log`, with the same redaction. If the disk stalls, at most 10 000 log records and
+10 000 debug lines wait in memory. Further ones are dropped, and once the writer catches up a
+line says how many: `… log records dropped` in `assp-ng.log`, or a `debug.log` line with
+direction `!`.
+
 The control socket `/run/assp-ng/control.sock` and the directories under `/var/lib/assp-ng` and
 `/var/log/assp-ng` are not reachable by other users (mode 0750). Members of the `assp-ng` group
 may use `assp-ng debug` and `assp-ng status`.

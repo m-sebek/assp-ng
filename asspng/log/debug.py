@@ -235,6 +235,7 @@ class DebugRules:
 
 
 _Item = tuple[float, str, str, str]
+DEBUG_QUEUE_MAX = 10_000  # lines waiting for the writer thread
 
 
 class DebugLog:
@@ -244,13 +245,19 @@ class DebugLog:
     does all file I/O. ``on_full`` runs on the writer thread, so it must be thread-safe (the
     server wraps it with ``loop.call_soon_threadsafe``). Errors are logged without the line
     content and never stop the thread.
+
+    At most ``max_queued`` lines wait for the writer. When it falls behind, for example on a
+    stalled disk, further lines are dropped and counted, and the writer notes the count in the
+    log, rather than holding them in memory or making the event loop wait.
     """
 
-    def __init__(self, path: Path, max_bytes: int, on_full: Callable[[], None]) -> None:
+    def __init__(self, path: Path, max_bytes: int, on_full: Callable[[], None], *,
+                 max_queued: int = DEBUG_QUEUE_MAX) -> None:
         self._path = path
         self._max_bytes = max_bytes
         self._on_full = on_full
-        self._queue: queue.SimpleQueue[_Item | None] = queue.SimpleQueue()
+        self._queue: queue.Queue[_Item | None] = queue.Queue(maxsize=max_queued)
+        self._dropped = 0  # guarded by _lock
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._closed = False
@@ -275,7 +282,11 @@ class DebugLog:
                                  type(exc).__name__)
                     return
                 self._thread = thread  # only a started thread: close() joins it
-            self._queue.put((time.time() if ts is None else ts, session_id, direction, text))
+            try:
+                self._queue.put_nowait(
+                    (time.time() if ts is None else ts, session_id, direction, text))
+            except queue.Full:
+                self._dropped += 1
 
     def close(self) -> None:
         """Flush queued lines, stop the writer thread and close the file. Idempotent."""
@@ -284,9 +295,10 @@ class DebugLog:
                 return
             self._closed = True
             thread = self._thread
-            if thread is not None:
-                self._queue.put(None)
         if thread is not None:
+            # Outside the lock: the writer takes it to read the drop count, and this put
+            # waits for the writer to make room in a full queue.
+            self._queue.put(None)
             thread.join()
 
     def _run(self) -> None:
@@ -294,7 +306,14 @@ class DebugLog:
             item = self._queue.get()
             if item is None:
                 break
+            # Lines are dropped only while the queue is full, so the next queued line always
+            # comes after the drops: note their count before it.
+            with self._lock:
+                dropped, self._dropped = self._dropped, 0
             try:
+                if dropped:
+                    self._handle((time.time(), "-", "!", f"{dropped} debug lines dropped: "
+                                  "the debug log writer fell behind"))
                 self._handle(item)
             except Exception as exc:  # the writer thread must survive any failure
                 _log.warning("debug log write failed: %s", type(exc).__name__)

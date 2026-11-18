@@ -1,12 +1,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import logging
+import queue
+import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from asspng.log.maillog import log_maillog
-from asspng.log.setup import configure_logging, shutdown_logging
+from asspng.log.setup import (
+    LOG_QUEUE_MAX,
+    DrainingQueueListener,
+    DroppingQueueHandler,
+    configure_logging,
+    shutdown_logging,
+)
 from tests.unit.log.test_maillog import PASSWORD, make
 
 pytestmark = pytest.mark.usefixtures("_clean")
@@ -73,6 +82,34 @@ def test_repeated_configure_does_not_leak(tmp_path: Path) -> None:
     assert logging.getLogger("asspng").handlers == []
 
 
+def test_third_party_warnings_reach_the_file_redacted(tmp_path: Path) -> None:
+    # Libraries log to their own loggers (redis, sqlalchemy, asyncio). Without a handler on
+    # the root logger their records went to logging's last-resort stderr handler, unredacted.
+    root = logging.getLogger()
+    before = list(root.handlers)
+    listener = configure_logging("INFO", tmp_path, journal=False)
+    try:
+        logging.getLogger("redis.asyncio").warning("AUTH PLAIN %s", PASSWORD)
+        logging.getLogger("sqlalchemy.pool").info("third-party info stays out")
+    finally:
+        shutdown_logging(listener)
+    app = (tmp_path / "assp-ng.log").read_text()
+    assert "WARNING redis.asyncio: AUTH PLAIN <redacted>" in app
+    assert PASSWORD not in app
+    assert "third-party info stays out" not in app
+    assert root.handlers == before
+
+
+def test_third_party_records_stay_out_of_the_maillog(tmp_path: Path) -> None:
+    listener = configure_logging("INFO", tmp_path, journal=False)
+    try:
+        logging.getLogger("asyncio").error("Task exception was never retrieved")
+    finally:
+        shutdown_logging(listener)
+    assert "Task exception" in (tmp_path / "assp-ng.log").read_text()
+    assert (tmp_path / "maillog.log").read_text() == ""
+
+
 def test_journal_handler_added(tmp_path: Path) -> None:
     from systemd.journal import JournalHandler
     listener = configure_logging("INFO", tmp_path, journal=True)
@@ -108,3 +145,58 @@ def test_auth_flag_and_exception_reach_file_redacted(tmp_path: Path) -> None:
     app = (tmp_path / "assp-ng.log").read_text()
     assert PASSWORD not in app
     assert "<redacted>" in app and "ValueError: AUTH PLAIN <redacted>" in app
+
+
+def test_log_queue_is_bounded(tmp_path: Path) -> None:
+    listener = configure_logging("INFO", tmp_path, journal=False)
+    try:
+        assert isinstance(listener.queue, queue.Queue)
+        assert listener.queue.maxsize == LOG_QUEUE_MAX == 10_000
+    finally:
+        shutdown_logging(listener)
+
+
+def record(message: str) -> logging.LogRecord:
+    return logging.makeLogRecord({"name": "asspng.test", "levelno": logging.INFO,
+                                  "levelname": "INFO", "msg": message})
+
+
+def test_full_log_queue_drops_and_counts_instead_of_waiting() -> None:
+    # A stalled disk stops the writer thread: the queue must neither grow without limit nor
+    # block the event loop that logs.
+    log_queue: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=3)
+    handler = DroppingQueueHandler(log_queue)
+    for i in range(5):
+        handler.handle(record(f"line {i}"))
+    assert [log_queue.get_nowait().getMessage() for _ in range(3)] == [
+        "line 0", "line 1", "line 2"]
+    handler.handle(record("after"))
+    warning, after = log_queue.get_nowait(), log_queue.get_nowait()
+    assert warning.levelno == logging.WARNING
+    assert warning.getMessage() == "2 log records dropped: the log writer fell behind"
+    assert after.getMessage() == "after"
+    assert log_queue.empty()
+
+
+def test_listener_stop_waits_for_room_in_a_full_queue() -> None:
+    gate = threading.Event()
+
+    class Slow(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            gate.wait(5)
+
+    log_queue: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=1)
+    listener = DrainingQueueListener(log_queue, Slow())
+    listener.start()
+    log_queue.put(record("taken by the writer"))
+    deadline = time.monotonic() + 5
+    while not log_queue.empty() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    log_queue.put(record("fills the queue"))
+    stopper = threading.Thread(target=listener.stop)
+    stopper.start()
+    time.sleep(0.2)
+    assert stopper.is_alive()  # waits for room instead of failing with queue.Full
+    gate.set()
+    stopper.join(5)
+    assert not stopper.is_alive()
