@@ -892,8 +892,14 @@ The systemd template unit `assp-ng-notify@.service` calls the same command with 
    drop-in.
 4. **Idle housekeeping:** after 60 s without sessions, or every 10 minutes under low load, the proxy
    expires cache entries, runs `gc.collect()` and calls glibc `malloc_trim(0)` through `ctypes`, so
-   that freed memory returns to the OS. RSS before and after is logged at debug level and RSS is
-   exposed in `/health`.
+   that memory freed in the glibc heap returns to the OS. RSS before and after is logged at debug
+   level and RSS is exposed in `/health`. Trimming does not reach CPython's small-object
+   allocator: it keeps a 1 MiB arena for as long as any object in it lives, so after a load peak
+   RSS settles at a plateau set by the peak concurrency, not at the baseline. Later load reuses
+   those arenas, so the plateau must not grow from one load to the next; growth would be a leak.
+   (Measured 2026-11-18 with 500 sessions: arenas 37 → 72, live Python objects unchanged at
+   about 38 MB, RSS 77 → 113.5 MB, the same after four rounds. `PYTHONMALLOC=malloc` lowered the
+   plateau to about 94 MB for about 9 % more CPU and was not adopted.)
 5. `MALLOC_ARENA_MAX=2` keeps glibc from creating extra arenas for helper threads.
 
 ### 8.8 CLI `assp-ng`

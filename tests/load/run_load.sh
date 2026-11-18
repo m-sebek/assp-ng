@@ -8,12 +8,15 @@
 #
 # Usage: tests/load/run_load.sh [results.md]
 #
-# Writes a Markdown table (messages per second and the proxy's RSS at baseline, at peak and
-# after the idle wait) to the file given, or to stdout. Settings through the environment:
-#   LOAD_MESSAGES   messages to send          (default 10000)
-#   LOAD_SESSIONS   concurrent sessions       (default 500)
-#   LOAD_SIZE       message size in bytes     (default 2000)
-#   LOAD_IDLE_WAIT  seconds idle before the last RSS reading (default 90)
+# Sends the messages in LOAD_ROUNDS rounds, each followed by an idle wait, and writes a
+# Markdown table (messages per second and the proxy's RSS at baseline, at peak and after the
+# idle wait of the first and of the last round) to the file given, or to stdout. Settings
+# through the environment:
+#   LOAD_MESSAGES   messages to send per round (default 10000)
+#   LOAD_SESSIONS   concurrent sessions        (default 500)
+#   LOAD_SIZE       message size in bytes      (default 2000)
+#   LOAD_ROUNDS     rounds                     (default 2)
+#   LOAD_IDLE_WAIT  seconds idle after each round before its RSS reading (default 90)
 set -euo pipefail
 
 # Postfix installs smtp-source and smtp-sink in /usr/sbin, which a non-root PATH lacks.
@@ -32,8 +35,14 @@ fi
 messages=${LOAD_MESSAGES:-10000}
 sessions=${LOAD_SESSIONS:-500}
 size=${LOAD_SIZE:-2000}
+rounds=${LOAD_ROUNDS:-2}
 idle_wait=${LOAD_IDLE_WAIT:-90}
 results=${1:-}
+
+if ! [[ $rounds =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: LOAD_ROUNDS must be a positive integer, not '$rounds'" >&2
+    exit 2
+fi
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/assp-ng-load.XXXXXX")
@@ -145,8 +154,9 @@ repo.close()
 PY
 )
 
-(cd "$repo" && exec python3 -m asspng.proxy --config "$work/etc/assp-ng.toml") \
-    >"$work/proxy.out" 2>&1 &
+# The same allocator setting as the systemd unit (spec 8.7).
+(cd "$repo" && MALLOC_ARENA_MAX=2 exec python3 -m asspng.proxy \
+    --config "$work/etc/assp-ng.toml") >"$work/proxy.out" 2>&1 &
 proxy=$!
 pids+=("$proxy")
 
@@ -155,41 +165,51 @@ wait_for_port "the proxy" "$proxy" "$proxy_port" "$work/proxy.out"
 sleep 2
 baseline=$(rss_mb "$proxy")
 
-source_start=$(date +%s.%N)
-smtp-source -c -l "$size" -m "$messages" -s "$sessions" -f sender@remote.test \
-    -t user@example.com 127.0.0.1:"$proxy_port" >"$work/source.out" 2>&1 &
-source=$!
-
 peak=$baseline
-while kill -0 "$source" 2>/dev/null; do
-    current=$(rss_mb "$proxy")
-    peak=$(awk -v a="$peak" -v b="$current" 'BEGIN { print (b > a) ? b : a }')
-    sleep 0.5
+source_seconds=0
+after=()
+
+# One round: smtp-source sends the messages while the proxy's RSS is sampled for the peak,
+# then the proxy idles for the idle wait, so housekeeping can trim (memory.idle_trim_after_s),
+# and its RSS is read.
+run_round() {
+    local round=$1 out="$work/source.$1.out" source start end current status=0
+    start=$(date +%s.%N)
+    smtp-source -c -l "$size" -m "$messages" -s "$sessions" -f sender@remote.test \
+        -t user@example.com 127.0.0.1:"$proxy_port" >"$out" 2>&1 &
+    source=$!
+    while kill -0 "$source" 2>/dev/null; do
+        current=$(rss_mb "$proxy")
+        peak=$(awk -v a="$peak" -v b="$current" 'BEGIN { print (b > a) ? b : a }')
+        sleep 0.5
+    done
+    wait "$source" || status=$?
+    end=$(date +%s.%N)
+    if [ "$status" -ne 0 ]; then
+        echo "ERROR: smtp-source failed in round $round:" >&2
+        cat "$out" >&2
+        echo "--- smtp-sink output:" >&2
+        cat "$work/sink.out" >&2
+        echo "--- end of the proxy log:" >&2
+        tail -n 30 "$work/logs/assp-ng.log" >&2 2>/dev/null || true
+        exit 1
+    fi
+    source_seconds=$(awk -v t="$source_seconds" -v a="$start" -v b="$end" \
+        'BEGIN { printf "%.3f", t + b - a }')
+    sleep "$idle_wait"
+    after+=("$(rss_mb "$proxy")")
+}
+
+for round in $(seq 1 "$rounds"); do
+    run_round "$round"
 done
-source_status=0
-wait "$source" || source_status=$?
-source_end=$(date +%s.%N)
 
-if [ "$source_status" -ne 0 ]; then
-    echo "ERROR: smtp-source failed:" >&2
-    cat "$work/source.out" >&2
-    echo "--- smtp-sink output:" >&2
-    cat "$work/sink.out" >&2
-    echo "--- end of the proxy log:" >&2
-    tail -n 30 "$work/logs/assp-ng.log" >&2 2>/dev/null || true
-    exit 1
-fi
-
-rate=$(awk -v n="$messages" -v a="$source_start" -v b="$source_end" \
-    'BEGIN { printf "%.0f", n / (b - a) }')
-
-sleep "$idle_wait"
-after=$(rss_mb "$proxy")
+rate=$(awk -v n="$((messages * rounds))" -v t="$source_seconds" 'BEGIN { printf "%.0f", n / t }')
 
 table=$(cat <<TABLE
-| Messages | Sessions | Message size (bytes) | Messages/s | RSS baseline (MiB) | RSS peak (MiB) | RSS ${idle_wait} s after the end (MiB) |
-|---|---|---|---|---|---|---|
-| $messages | $sessions | $size | $rate | $baseline | $peak | $after |
+| Messages per round | Rounds | Sessions | Message size (bytes) | Messages/s | RSS baseline (MiB) | RSS peak (MiB) | RSS ${idle_wait} s after round 1 (MiB) | RSS ${idle_wait} s after round $rounds (MiB) |
+|---|---|---|---|---|---|---|---|---|
+| $messages | $rounds | $sessions | $size | $rate | $baseline | $peak | ${after[0]} | ${after[-1]} |
 TABLE
 )
 

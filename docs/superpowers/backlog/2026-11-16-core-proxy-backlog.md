@@ -79,6 +79,10 @@ Items marked ⚠ touch security or privacy.
     proxy, and raises `smtp-sink`'s connection limit.
   - The job can also be started by hand (`workflow_dispatch`).
   - The unit and integration CI jobs passed on 2026-11-16.
+  - A manual run on 2026-11-17 passed. RSS stayed 22 MiB above the baseline after the idle wait.
+    The investigation on 2026-11-18 found no leak, only CPython's arena plateau (spec 8.7,
+    item 4). The script now runs several rounds, and `docs/performance.md` judges whether that
+    plateau grows from round to round. The test server still has to produce its numbers.
 
 ## 4. Open minor findings by area
 
@@ -136,6 +140,16 @@ Items marked ⚠ touch security or privacy.
   - the reply to the quiet-period PING is not checked;
   - TCP keep-alive uses the OS default idle time.
 - The `_counter` log uses `key.rsplit`, which truncates IPv6 network keys in the log (T17).
+- Redis failures under saturation (found 2026-11-18). A load of 500 sessions at about 770
+  messages/s keeps one CPU core busy. Each round then caused about 500 to 650 failed Redis state
+  operations and about two switches to DEGRADED. Every failure was a `TimeoutError` at the
+  200 ms `redis.op_timeout_ms`. The cause is the event loop's lag (up to about 140 ms per step,
+  and an operation needs several steps), not Redis. The proxy keeps working from local memory
+  as designed. To decide:
+  - raise the default timeout, for example to 1000 ms;
+  - or not count a timeout as a Redis failure while the event loop itself lags.
+  The controller also logs only `StateError` and not the underlying type, which made the cause
+  hard to find.
 
 ### TLS and DNS
 
@@ -324,6 +338,8 @@ Items marked ⚠ touch security or privacy.
 
 | Finding | Fixed by |
 |---|---|
+| Listeners used asyncio's default listen backlog of 100. A burst of over 100 connections overflowed the accept queue; the kernel fell back to SYN cookies and dropped the connections it could not queue, which clients kept waiting on for a greeting (found 2026-11-18 by the load test) | 2026-11-18: `LISTEN_BACKLOG = socket.SOMAXCONN`, capped by the kernel at `net.core.somaxconn` |
+| The proxy imported Alembic only to read the schema revision, about 10 MB of RSS for the life of the service (found 2026-11-18) | 2026-11-18: `current_revision()` reads `alembic_version` with SQLAlchemy; only `db upgrade` imports Alembic |
 | Unquoted `@` in the local part accepted (T3) | A5, ruling R61 |
 | Negative relay tests missing (T25) | A5, `tests/security/test_relay_routing.py` |
 | Session tests did not run the production check order (T36) | A3, ruling R63 |
