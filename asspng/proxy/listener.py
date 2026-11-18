@@ -27,6 +27,11 @@ from asspng.tls.store import CertificateStore
 _log = logging.getLogger(__name__)
 
 READ_LIMIT = 64 * 1024  # StreamReader buffer limit of a client connection
+# Accept-queue length of a listening socket; the kernel caps it at net.core.somaxconn. asyncio's
+# default of 100 overflows on connection bursts: the kernel then falls back to SYN cookies and
+# drops connections it cannot queue, which the clients still see as open, waiting for a
+# greeting until their own timeout.
+LISTEN_BACKLOG = socket.SOMAXCONN
 
 ConnectionHandler = Callable[
     [ListenerConfig, asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]
@@ -106,7 +111,8 @@ class ListenerManager:
         sock = _bind(family, host, listener.port)
         callback = partial(self._handler, listener)
         try:
-            server = await start_server(callback, implicit_tls=implicit_tls, sock=sock)
+            server = await start_server(callback, implicit_tls=implicit_tls, sock=sock,
+                                        backlog=LISTEN_BACKLOG)
         except BaseException:
             sock.close()
             raise

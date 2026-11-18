@@ -7,6 +7,7 @@ import asyncio
 import dataclasses
 import socket
 import ssl
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -122,6 +123,27 @@ async def test_port_in_use_fails_start(managers: list[ListenerManager]) -> None:
         listener = dataclasses.replace(LISTENER, ipv6=False, port=port)
         with pytest.raises(OSError):
             await start(managers, listener, Recorder())
+
+
+def accept_queue_limit(sock: socket.socket) -> int:
+    """The accept-queue limit the kernel applies to a listening socket. For a socket in the
+    LISTEN state Linux reports it in ``tcpi_sacked`` of ``TCP_INFO`` (offset 28)."""
+    info = sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 104)
+    return int.from_bytes(info[28:32], sys.byteorder)
+
+
+async def test_listen_backlog_absorbs_connection_bursts(
+        managers: list[ListenerManager]) -> None:
+    # With asyncio's default backlog of 100, a burst of 500 connections overflowed the accept
+    # queue: the kernel answered with SYN cookies and dropped what it could not queue, while
+    # the clients saw open connections and waited for a greeting that never came.
+    somaxconn = int(Path("/proc/sys/net/core/somaxconn").read_text())
+    if somaxconn <= 100:
+        pytest.skip(f"net.core.somaxconn is {somaxconn}")
+    manager = await start(managers, dataclasses.replace(LISTENER, ipv6=False), Recorder())
+    [(_, server)] = manager._servers
+    [sock] = server.sockets
+    assert accept_queue_limit(sock) == min(socket.SOMAXCONN, somaxconn)
 
 
 @pytest.fixture
